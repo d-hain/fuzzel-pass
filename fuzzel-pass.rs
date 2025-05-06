@@ -1,8 +1,31 @@
 use std::collections::VecDeque;
-use std::env;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::str;
+use std::{env, io};
+use std::{fmt, str};
+
+#[derive(Debug)]
+enum FuzzelSelectError {
+    SpawnFailed(io::Error),
+    PipeFailed(io::Error),
+    OutputFailed(io::Error),
+    UserCancelled,
+    Utf8Error(std::string::FromUtf8Error),
+}
+
+impl fmt::Display for FuzzelSelectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FuzzelSelectError::SpawnFailed(e) => {
+                write!(f, "Failed to spawn fuzzel! Maybe fuzzel is not installed?: {}", e)
+            }
+            FuzzelSelectError::PipeFailed(e) => write!(f, "Failed to pipe values into fuzzel!: {}", e),
+            FuzzelSelectError::OutputFailed(e) => write!(f, "Failed get a selection from fuzzel!: {}", e),
+            FuzzelSelectError::Utf8Error(e) => write!(f, "Fuzzel output is not valid UTF-8!: {}", e),
+            FuzzelSelectError::UserCancelled => write!(f, "User cancelled the fuzzel selection!"),
+        }
+    }
+}
 
 struct Arguments {
     /// Type the selection instead of copying to the clipboard.
@@ -45,13 +68,12 @@ Options:
          Type the selection instead of copying to the clipboard.
      -h,--help
          Show this help message.",
-        env::args()
-            .next()
-            .unwrap_or_else(|| "fuzzel-pass".to_string())
+        env::args().next().unwrap_or_else(|| "fuzzel-pass".to_string())
     );
 }
 
 fn main() {
+    // TODO: expects -> stderr printen
     // TODO: implement typing
     let _args = Arguments::parse();
 
@@ -65,41 +87,102 @@ fn main() {
     let password_list = if pass_list.status.success() {
         str::from_utf8(&pass_list.stdout).expect("Output of \"pass list\" is not valid UTF-8!")
     } else {
-        let stderr =
-            str::from_utf8(&pass_list.stderr).expect("Output of \"pass list\" is not valid UTF-8!");
+        let stderr = str::from_utf8(&pass_list.stderr).expect("The error output of \"pass list\" is not valid UTF-8!");
         panic!("Failed to list passwords using \"pass list\":\n{}", stderr)
     };
 
     // Parse the passwords with their shit format into a vector
     let passwords = parse_passwords(password_list);
 
-    // Spawn fuzzel to select a password
+    // Select password using fuzzel
+    let selected_password =
+        fuzzel_select_value(&passwords).unwrap_or_else(|e| panic!("Error while selecting a password using fuzzel: {}", e));
+
+    // Get the extra fields in the password file
+    let pass_show = Command::new("pass")
+        .arg("show")
+        .arg(&selected_password)
+        .output()
+        .unwrap_or_else(|_| {
+            panic!(
+                "Failed to show the password contents using \"pass show {}\"!",
+                selected_password
+            )
+        });
+
+    // Convert "pass show" output to a &str
+    let field_list = if pass_show.status.success() {
+        str::from_utf8(&pass_show.stdout).unwrap_or_else(|_| {
+            panic!(
+                "The contents of the password: \"{}\" are not valid UTF-8!",
+                selected_password
+            )
+        })
+    } else {
+        let stderr = str::from_utf8(&pass_show.stderr).expect("The error output of \"pass show\" is not valid UTF-8!");
+        panic!(
+            "Failed to show the contents of the password using \"pass show {}\":\n{}",
+            selected_password, stderr
+        )
+    };
+
+    // Parse fields from "pass show <PWD>"
+    let mut fields = field_list
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let key_value = line.split_once(':').unwrap_or_else(|| {
+                panic!(
+                    "Expected a key value pair split by ':' in the password file of \"{}\", but found: {}",
+                    selected_password, line
+                )
+            });
+            (key_value.0, key_value.1.trim())
+        })
+        .collect::<VecDeque<(&str, &str)>>();
+
+    // Add the password in front
+    let password = field_list
+        .lines()
+        .next()
+        .expect("Expected a password in the password file of \"{}\", but found nothing!");
+    fields.push_front(("password", password));
+
+    // Select a field using fuzzel
+    let field_keys = fields.iter().map(|field| field.0.to_string()).collect::<Vec<String>>();
+    let selected_field = fuzzel_select_value(&field_keys)
+        .unwrap_or_else(|e| panic!("Error while selecting a password field using fuzzel: {}", e));
+
+    dbg!(selected_field);
+}
+
+fn fuzzel_select_value(values: &[String]) -> Result<String, FuzzelSelectError> {
+    // Spawn fuzzel to select a value
     let mut fuzzel_dmenu = Command::new("fuzzel")
         .arg("--dmenu")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .expect(
-            "Failed to spawn the \"fuzzel --dmenu\" command. Maybe \"fuzzel\" is not installed?",
-        );
+        .map_err(FuzzelSelectError::SpawnFailed)?;
 
     // Pipe the passwords list into fuzzel
     if let Some(stdin) = &mut fuzzel_dmenu.stdin {
         stdin
-            .write_all(passwords.join("\n").as_bytes())
-            .expect("Failed to pipe passwords into \"fuzzel --dmenu\"!");
+            .write_all(values.join("\n").as_bytes())
+            .map_err(FuzzelSelectError::PipeFailed)?;
     }
 
-    // Get the selection from fuzzel
+    // Get the selected values from fuzzel
     let selection = fuzzel_dmenu
         .wait_with_output()
-        .expect("Failed to get a password selection from \"fuzzel --dmenu\"!");
-    let selection = String::from_utf8(selection.stdout)
-        .expect("The chosen password from \"fuzzel --dmenu\" is not valid UTF-8!");
-    // Remove previously added newline
-    let selection = selection.trim();
+        .map_err(FuzzelSelectError::OutputFailed)?;
+    if !selection.status.success() {
+        return Err(FuzzelSelectError::UserCancelled);
+    }
+    let selection = String::from_utf8(selection.stdout).map_err(FuzzelSelectError::Utf8Error)?;
 
-    dbg!(selection);
+    // Remove previously added newline
+    Ok(selection.trim().to_string())
 }
 
 /// Parse the passwords list and get the password paths.
