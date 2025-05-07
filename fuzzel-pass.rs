@@ -75,6 +75,7 @@ Options:
 fn main() {
     // TODO: expects -> stderr printen
     // TODO: implement typing
+    // TODO: README.md
     let _args = Arguments::parse();
 
     // Get all passwords from "pass list"
@@ -95,8 +96,8 @@ fn main() {
     let passwords = parse_passwords(password_list);
 
     // Select password using fuzzel
-    let selected_password =
-        fuzzel_select_value(&passwords).unwrap_or_else(|e| panic!("Error while selecting a password using fuzzel: {}", e));
+    let selected_password = fuzzel_select_value(&passwords)
+        .unwrap_or_else(|e| panic!("Error while selecting a password using fuzzel: {}", e));
 
     // Get the extra fields in the password file
     let pass_show = Command::new("pass")
@@ -139,6 +140,7 @@ fn main() {
             });
             (key_value.0, key_value.1.trim())
         })
+        // (Key, Value)
         .collect::<VecDeque<(&str, &str)>>();
 
     // Add the password in front
@@ -150,10 +152,36 @@ fn main() {
 
     // Select a field using fuzzel
     let field_keys = fields.iter().map(|field| field.0.to_string()).collect::<Vec<String>>();
-    let selected_field = fuzzel_select_value(&field_keys)
-        .unwrap_or_else(|e| panic!("Error while selecting a password field using fuzzel: {}", e));
+    let selected_field_key = fuzzel_select_value(&field_keys)
+        .unwrap_or_else(|e| panic!("Error while selecting a password field using fuzzel!: {}", e));
 
-    dbg!(selected_field);
+    let selected_field = fields.iter().find(|field| field.0 == selected_field_key);
+    if selected_field.is_none() {
+        panic!("You somehow selected a non-existant field using fuzzel!");
+    }
+
+    // Copy selection to clipboard or type when that flag is passed
+    // TODO: typing
+    let mut wl_copy = Command::new("wl-copy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("Failed to spawn wl-copy! Maybe wl-clipboard is not installed?: {}", e));
+
+    // Pipe the selected fields value into wl-copy
+    if let Some(stdin) = &mut wl_copy.stdin {
+        stdin
+            .write_all(selected_field.unwrap().1.as_bytes())
+            .unwrap_or_else(|e| panic!("Failed to pipe the selected fields value into wl-copy!: {}", e));
+    }
+
+    // Check wl-copy status
+    let wl_copy_status = wl_copy
+        .wait()
+        .unwrap_or_else(|e| panic!("Failed to copy to clipboard using wl-copy!: {}", e));
+    if !wl_copy_status.success() {
+        panic!("Failed to copy to clipboard using wl-copy!: {}", wl_copy_status);
+    }
 }
 
 fn fuzzel_select_value(values: &[String]) -> Result<String, FuzzelSelectError> {
