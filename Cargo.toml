@@ -6,3 +6,7 @@ edition = "2024"
 [[bin]]
 name = "fuzzel-pass"
 path = "fuzzel-pass.rs"
+
+[profile.release]
+strip = "debuginfo"
+lto = true
