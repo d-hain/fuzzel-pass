@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::{exit, Command, Stdio};
 use std::{env, io};
 use std::{fmt, str};
 
@@ -58,7 +58,7 @@ impl Arguments {
 }
 
 fn print_usage() {
-    println!(
+    eprintln!(
         "A utility to copy passwords from pass using fuzzel.
 
 Usage: {} [options]...
@@ -70,6 +70,8 @@ Options:
          Show this help message.",
         env::args().next().unwrap_or_else(|| "fuzzel-pass".to_string())
     );
+
+    exit(0);
 }
 
 fn main() {
