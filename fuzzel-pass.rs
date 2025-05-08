@@ -1,16 +1,15 @@
 use std::collections::VecDeque;
-use std::fmt::write;
-use std::io::Write;
+use std::io::{Error, ErrorKind, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Stdio, exit};
-use std::{env, io};
+use std::{env, error};
 use std::{fmt, str};
 
 #[derive(Debug)]
 enum FuzzelSelectError {
-    SpawnFailed(io::Error),
-    PipeFailed(io::Error),
-    OutputFailed(io::Error),
+    SpawnFailed(Error),
+    PipeFailed(Error),
+    OutputFailed(Error),
     UserCancelled,
     Utf8Error(std::string::FromUtf8Error),
 }
@@ -29,12 +28,20 @@ impl fmt::Display for FuzzelSelectError {
     }
 }
 
+impl error::Error for FuzzelSelectError {}
+
+impl From<FuzzelSelectError> for Error {
+    fn from(value: FuzzelSelectError) -> Self {
+        Error::new(ErrorKind::Other, value)
+    }
+}
+
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug)]
 enum CopyFieldError {
-    SpawnFailed(io::Error),
-    PipeFailed(io::Error),
-    CopyFailed(io::Error),
+    SpawnFailed(Error),
+    PipeFailed(Error),
+    CopyFailed(Error),
 }
 
 impl fmt::Display for CopyFieldError {
@@ -51,9 +58,17 @@ impl fmt::Display for CopyFieldError {
     }
 }
 
+impl error::Error for CopyFieldError {}
+
+impl From<CopyFieldError> for Error {
+    fn from(value: CopyFieldError) -> Self {
+        Error::new(ErrorKind::Other, value)
+    }
+}
+
 #[derive(Debug)]
 enum TypeFieldError {
-    CommandFailed(io::Error),
+    CommandFailed(Error),
 }
 
 impl fmt::Display for TypeFieldError {
@@ -61,6 +76,14 @@ impl fmt::Display for TypeFieldError {
         match self {
             TypeFieldError::CommandFailed(e) => write!(f, "Failed to run wtype! Maybe wtype is not installed?: {}", e),
         }
+    }
+}
+
+impl error::Error for TypeFieldError {}
+
+impl From<TypeFieldError> for Error {
+    fn from(value: TypeFieldError) -> Self {
+        Error::new(ErrorKind::Other, value)
     }
 }
 
@@ -102,110 +125,116 @@ Options:
          Type the selection instead of copying to the clipboard.
      -h,--help
          Show this help message.",
-        env::args().next().unwrap_or_else(|| "fuzzel-pass".to_string())
+        env::args().next().unwrap_or("fuzzel-pass".to_string())
     );
 
     exit(0);
 }
 
-fn main() {
-    // TODO: expects -> Result usen
+fn main() -> Result<(), String> {
     let args = Arguments::parse();
 
     // Get all passwords from "pass list"
     let pass_list = Command::new("pass")
         .arg("list")
         .output()
-        .expect("Failed to list passwords using \"pass list\"!");
+        .map_err(|e| format!("Failed to list password using \"pass list\"!: {}", e))?;
 
     // Convert the "pass list" passwords to a &str
     let password_list = if pass_list.status.success() {
-        str::from_utf8(&pass_list.stdout).expect("Output of \"pass list\" is not valid UTF-8!")
+        str::from_utf8(&pass_list.stdout).map_err(|e| format!("Output of \"pass list\" is not valid UTF-8!: {}", e))
     } else {
-        let stderr = str::from_utf8(&pass_list.stderr).expect("The error output of \"pass list\" is not valid UTF-8!");
-        panic!("Failed to list passwords using \"pass list\":\n{}", stderr)
+        let stderr = str::from_utf8(&pass_list.stderr)
+            .map_err(|e| format!("The error output of \"pass list\" is not valid UTF-8!: {}", e))?;
+        Err(format!("Failed to list passwords using \"pass list\": {}", stderr))
     };
 
     // Parse the passwords with their shit format into a vector
-    let passwords = parse_passwords(password_list);
+    let passwords = parse_passwords(password_list?);
 
     // Select password using fuzzel
-    let selected_password = fuzzel_select_value(&passwords)
-        .unwrap_or_else(|e| panic!("Error while selecting a password using fuzzel: {}", e));
+    let selected_password =
+        fuzzel_select_value(&passwords).map_err(|e| format!("Failed selecting a value using fuzzel!: {}", e))?;
 
     // Get the extra fields in the password file
     let pass_show = Command::new("pass")
         .arg("show")
         .arg(&selected_password)
         .output()
-        .unwrap_or_else(|_| {
-            panic!(
-                "Failed to show the password contents using \"pass show {}\"!",
-                selected_password
+        .map_err(|e| {
+            format!(
+                "Failed to show the password contents using \"pass show {}\"!: {}",
+                selected_password, e
             )
-        });
+        })?;
 
     // Convert "pass show" output to a &str
     let field_list = if pass_show.status.success() {
-        str::from_utf8(&pass_show.stdout).unwrap_or_else(|_| {
-            panic!(
-                "The contents of the password: \"{}\" are not valid UTF-8!",
-                selected_password
+        str::from_utf8(&pass_show.stdout).map_err(|e| {
+            format!(
+                "The contents of the password: \"{}\" are not valid UTF-8!: {}",
+                selected_password, e
             )
-        })
+        })?
     } else {
-        let stderr = str::from_utf8(&pass_show.stderr).expect("The error output of \"pass show\" is not valid UTF-8!");
-        panic!(
-            "Failed to show the contents of the password using \"pass show {}\":\n{}",
+        let stderr = str::from_utf8(&pass_show.stderr)
+            .map_err(|e| format!("The error output of \"pass show\" is not valid UTF-8!: {}", e))?;
+
+        return Err(format!(
+            "Failed to show the contents of the password using \"pass show {}\": {}",
             selected_password, stderr
-        )
+        ));
     };
 
     // Parse fields from "pass show <PWD>"
     let mut fields = field_list
         .lines()
         .skip(1)
+        .filter(|line| !line.trim().is_empty())
         .map(|line| {
-            let key_value = line.split_once(':').unwrap_or_else(|| {
-                panic!(
+            line.split_once(':').map(|(k, v)| (k, v.trim())).ok_or_else(|| {
+                format!(
                     "Expected a key value pair split by ':' in the password file of \"{}\", but found: {}",
                     selected_password, line
                 )
-            });
-            (key_value.0, key_value.1.trim())
+            })
         })
-        // (Key, Value)
-        .collect::<VecDeque<(&str, &str)>>();
+        // (&str, &str) => (Key, Value)
+        .collect::<Result<VecDeque<(&str, &str)>, String>>()?;
 
     // Add the password in front
-    let password = field_list
-        .lines()
-        .next()
-        .expect("Expected a password in the password file of \"{}\", but found nothing!");
+    let password = field_list.lines().next().ok_or_else(|| {
+        format!(
+            "Expected a password in the password file of \"{}\", but found nothing!",
+            selected_password
+        )
+    })?;
     fields.push_front(("password", password));
 
     // Select a field using fuzzel
     let field_keys = fields.iter().map(|field| field.0.to_string()).collect::<Vec<String>>();
     let selected_field_key = fuzzel_select_value(&field_keys)
-        .unwrap_or_else(|e| panic!("Error while selecting a password field using fuzzel!: {}", e));
+        .map_err(|e| format!("Error while selecting a password field using fuzzel!: {}", e))?;
 
     let selected_field = fields.iter().find(|field| field.0 == selected_field_key);
     if selected_field.is_none() {
-        panic!("You somehow selected a non-existant field using fuzzel!");
+        return Err("You somehow selected a non-existant field using fuzzel!".to_string());
     }
 
     // Copy selection to clipboard or type when that flag is passed
     if args.type_selection {
         type_field_value(selected_field.unwrap().1)
-            .unwrap_or_else(|e| panic!("Error while typing the selected fields value using wl-copy: {}", e));
+            .map_err(|e| format!("Error while typing the selected fields value using wl-copy: {}", e))?;
     } else {
-        copy_field_value(selected_field.unwrap().1).unwrap_or_else(|e| {
-            panic!(
+        copy_field_value(selected_field.unwrap().1).map_err(|e| {
+            format!(
                 "Error while copying the selected fields value to the clipboard using wl-copy: {}",
                 e
             )
-        });
+        })?;
     }
+
+    Ok(())
 }
 
 /// Types the passed value wherever the cursor is using wtype.
@@ -216,8 +245,8 @@ fn type_field_value(value: &str) -> Result<(), TypeFieldError> {
         .map_err(TypeFieldError::CommandFailed)?;
 
     if !wtype_status.success() {
-        return Err(TypeFieldError::CommandFailed(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(TypeFieldError::CommandFailed(Error::new(
+            ErrorKind::Other,
             format!(
                 "wtype failed with exit code: {}",
                 wtype_status.code().unwrap_or(
@@ -248,8 +277,8 @@ fn copy_field_value(value: &str) -> Result<(), CopyFieldError> {
     // Check wl-copy status
     let wl_copy_status = wl_copy.wait().map_err(CopyFieldError::CopyFailed)?;
     if !wl_copy_status.success() {
-        return Err(CopyFieldError::CopyFailed(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(CopyFieldError::CopyFailed(Error::new(
+            ErrorKind::Other,
             format!(
                 "wl-copy failed with exit code: {}",
                 wl_copy_status.code().unwrap_or(
