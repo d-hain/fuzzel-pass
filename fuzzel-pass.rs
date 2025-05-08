@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
+use std::fmt::write;
 use std::io::Write;
-use std::process::{exit, Command, Stdio};
+use std::os::unix::process::ExitStatusExt;
+use std::process::{Command, Stdio, exit};
 use std::{env, io};
 use std::{fmt, str};
 
@@ -27,14 +29,49 @@ impl fmt::Display for FuzzelSelectError {
     }
 }
 
+#[allow(clippy::enum_variant_names)]
+#[derive(Debug)]
+enum CopyFieldError {
+    SpawnFailed(io::Error),
+    PipeFailed(io::Error),
+    CopyFailed(io::Error),
+}
+
+impl fmt::Display for CopyFieldError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CopyFieldError::SpawnFailed(e) => write!(
+                f,
+                "Failed to spawn wl-copy! Maybe wl-clipboard is not installed?: {}",
+                e
+            ),
+            CopyFieldError::PipeFailed(e) => write!(f, "Failed to pipe the selected fields value into wl-copy!: {}", e),
+            CopyFieldError::CopyFailed(e) => write!(f, "Failed to copy to clipboard using wl-copy!: {}", e),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum TypeFieldError {
+    CommandFailed(io::Error),
+}
+
+impl fmt::Display for TypeFieldError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TypeFieldError::CommandFailed(e) => write!(f, "Failed to run wtype! Maybe wtype is not installed?: {}", e),
+        }
+    }
+}
+
 struct Arguments {
     /// Type the selection instead of copying to the clipboard.
-    typ: bool,
+    type_selection: bool,
 }
 
 impl Arguments {
     fn new() -> Self {
-        Self { typ: false }
+        Self { type_selection: false }
     }
 
     fn parse() -> Self {
@@ -45,10 +82,7 @@ impl Arguments {
         for arg in args_iter {
             match arg.as_str() {
                 "-h" | "--help" => print_usage(),
-                "-t" | "--type" => {
-                    arguments.typ = true;
-                    println!("Typing is not yet implemented!");
-                }
+                "-t" | "--type" => arguments.type_selection = true,
                 _ => panic!("Unknown flag or value: \"{}\"!", arg.as_str()),
             }
         }
@@ -75,10 +109,8 @@ Options:
 }
 
 fn main() {
-    // TODO: expects -> stderr printen
-    // TODO: implement typing
-    // TODO: README.md
-    let _args = Arguments::parse();
+    // TODO: expects -> Result usen
+    let args = Arguments::parse();
 
     // Get all passwords from "pass list"
     let pass_list = Command::new("pass")
@@ -163,29 +195,76 @@ fn main() {
     }
 
     // Copy selection to clipboard or type when that flag is passed
-    // TODO: typing
+    if args.type_selection {
+        type_field_value(selected_field.unwrap().1)
+            .unwrap_or_else(|e| panic!("Error while typing the selected fields value using wl-copy: {}", e));
+    } else {
+        copy_field_value(selected_field.unwrap().1).unwrap_or_else(|e| {
+            panic!(
+                "Error while copying the selected fields value to the clipboard using wl-copy: {}",
+                e
+            )
+        });
+    }
+}
+
+/// Types the passed value wherever the cursor is using wtype.
+fn type_field_value(value: &str) -> Result<(), TypeFieldError> {
+    let wtype_status = Command::new("wtype")
+        .arg(value)
+        .status()
+        .map_err(TypeFieldError::CommandFailed)?;
+
+    if !wtype_status.success() {
+        return Err(TypeFieldError::CommandFailed(io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "wtype failed with exit code: {}",
+                wtype_status.code().unwrap_or(
+                    wtype_status
+                        .stopped_signal()
+                        .expect("If this fails I shoot myself in the foot!")
+                )
+            ),
+        )));
+    }
+
+    Ok(())
+}
+
+/// Copies the passed value to the clipboard using wl-copy.
+fn copy_field_value(value: &str) -> Result<(), CopyFieldError> {
     let mut wl_copy = Command::new("wl-copy")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .unwrap_or_else(|e| panic!("Failed to spawn wl-copy! Maybe wl-clipboard is not installed?: {}", e));
+        .map_err(CopyFieldError::SpawnFailed)?;
 
     // Pipe the selected fields value into wl-copy
     if let Some(stdin) = &mut wl_copy.stdin {
-        stdin
-            .write_all(selected_field.unwrap().1.as_bytes())
-            .unwrap_or_else(|e| panic!("Failed to pipe the selected fields value into wl-copy!: {}", e));
+        stdin.write_all(value.as_bytes()).map_err(CopyFieldError::PipeFailed)?;
     }
 
     // Check wl-copy status
-    let wl_copy_status = wl_copy
-        .wait()
-        .unwrap_or_else(|e| panic!("Failed to copy to clipboard using wl-copy!: {}", e));
+    let wl_copy_status = wl_copy.wait().map_err(CopyFieldError::CopyFailed)?;
     if !wl_copy_status.success() {
-        panic!("Failed to copy to clipboard using wl-copy!: {}", wl_copy_status);
+        return Err(CopyFieldError::CopyFailed(io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "wl-copy failed with exit code: {}",
+                wl_copy_status.code().unwrap_or(
+                    wl_copy_status
+                        .stopped_signal()
+                        .expect("If this fails I shoot myself in the foot!")
+                )
+            ),
+        )));
     }
+
+    Ok(())
 }
 
+/// Select and return a value from the given list of values using fuzzel.
 fn fuzzel_select_value(values: &[String]) -> Result<String, FuzzelSelectError> {
     // Spawn fuzzel to select a value
     let mut fuzzel_dmenu = Command::new("fuzzel")
