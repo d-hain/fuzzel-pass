@@ -36,17 +36,6 @@ git clone https://github.com/d-hain/fuzzel-pass
 cd fuzzel-pass
 ```
 
-## Build using nix
-
-```shell
-nix build
-```
-
-And run using:
-```shell
-./result/bin/fuzzel-pass
-```
-
 ## Build from source
 
 ```shell
@@ -56,6 +45,17 @@ cargo build --release
 And run using:
 ```shell
 ./target/release/fuzzel-pass
+```
+
+## Build using nix
+
+```shell
+nix build
+```
+
+And run using:
+```shell
+./result/bin/fuzzel-pass
 ```
 
 ## Build using nix (without cloning the repo)

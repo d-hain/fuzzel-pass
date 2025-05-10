@@ -18,15 +18,32 @@
           pkgs = import nixpkgs {inherit system;};
         });
   in {
-    packages = eachSystem ({pkgs, ...}: {
+    packages = eachSystem ({
+      pkgs,
+      system,
+    }: {
       default = pkgs.rustPlatform.buildRustPackage {
         pname = "fuzzel-pass";
-        version = "0.1.0";
+        version = "0.1";
         src = ./.;
 
         cargoLock = {
           lockFile = ./Cargo.lock;
         };
+
+        nativeBuildInputs = with pkgs; [
+          makeWrapper
+        ];
+
+        buildInputs = with pkgs; [
+          wl-clipboard
+          wtype
+        ];
+
+        postInstall = ''
+          wrapProgram "$out/bin/fuzzel-pass" \
+            --prefix PATH : "${with pkgs; lib.makeBinPath [wl-clipboard wtype]}"
+        '';
       };
     });
 
