@@ -26,7 +26,7 @@ url: https://example.com
 ```
 The password **MUST** be on the first line.
 
-# Installation
+# Building / Installation
 
 Clone the repository and cd into it:
 ```shell
@@ -63,3 +63,65 @@ And run using:
 ```shell
 nix build github:d-hain/fuzzel-pass
 ```
+
+## Install on NixOS using flakes
+
+```nix
+# flake.nix
+{
+    inputs = {
+        nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+        fuzzel-pass = {
+            url = "github:d-hain/fuzzel-pass";
+            # inputs.nixpkgs.follows = "nixpkgs";
+        }
+    };
+
+    outputs = {
+        nixpkgs,
+        fuzzel-pass,
+        ...
+    }: let
+        system = "x86_64-linux";
+        pkgs = nixpkgs.legacyPackages.${system};
+    in {
+        nixosConfigurations.default = nixpkgs.lib.nixosSystem {
+            system = system;
+            specialArgs = {
+                fuzzel-pass = fuzzel-pass;
+            };
+
+            modules = [
+                /path/to/configuration.nix
+            ];
+        };
+    };
+}
+```
+
+```nix
+# configuration.nix
+
+{
+    config,
+    lib,
+    pkgs,
+    fuzzel-pass,
+    ...
+}:
+{
+    # ...
+
+    users.users.USERNAME = {
+        # ...
+        packages = with pkgs; [
+            (fuzzel-pass.packages.${pkgs.system}.default)
+            # ...
+        ];
+    };
+
+    # ...
+}
+```
+
+(if enough people use this someday I'll make a PR for adding this to nixpkgs)
