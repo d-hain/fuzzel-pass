@@ -387,6 +387,7 @@ fn is_line_directory(line: &str) -> bool {
 /// Strip out the ANSI codes and any non-breaking spaces from a password list line.
 fn strip_ansi_line(line: &str) -> String {
     line.replace("\u{1b}[01;34m", "")
+        .replace("\u{1b}[00m", "")
         .replace("\u{1b}[0m", "")
         .replace("\u{a0}", " ")
 }
