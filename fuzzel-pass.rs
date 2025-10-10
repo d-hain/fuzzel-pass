@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::io::{Error, ErrorKind, Write};
+use std::io::{Error, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Stdio, exit};
 use std::{env, error};
@@ -32,7 +32,7 @@ impl error::Error for FuzzelSelectError {}
 
 impl From<FuzzelSelectError> for Error {
     fn from(value: FuzzelSelectError) -> Self {
-        Error::new(ErrorKind::Other, value)
+        Error::other(value)
     }
 }
 
@@ -62,7 +62,7 @@ impl error::Error for CopyFieldError {}
 
 impl From<CopyFieldError> for Error {
     fn from(value: CopyFieldError) -> Self {
-        Error::new(ErrorKind::Other, value)
+        Error::other(value)
     }
 }
 
@@ -83,7 +83,7 @@ impl error::Error for TypeFieldError {}
 
 impl From<TypeFieldError> for Error {
     fn from(value: TypeFieldError) -> Self {
-        Error::new(ErrorKind::Other, value)
+        Error::other(value)
     }
 }
 
@@ -224,7 +224,7 @@ fn main() -> Result<(), String> {
     // Copy selection to clipboard or type when that flag is passed
     if args.type_selection {
         type_field_value(selected_field.unwrap().1)
-            .map_err(|e| format!("Error while typing the selected fields value using wl-copy: {}", e))?;
+            .map_err(|e| format!("Error while typing the selected fields value using wtype: {}", e))?;
     } else {
         copy_field_value(selected_field.unwrap().1).map_err(|e| {
             format!(
@@ -245,8 +245,7 @@ fn type_field_value(value: &str) -> Result<(), TypeFieldError> {
         .map_err(TypeFieldError::CommandFailed)?;
 
     if !wtype_status.success() {
-        return Err(TypeFieldError::CommandFailed(Error::new(
-            ErrorKind::Other,
+        return Err(TypeFieldError::CommandFailed(Error::other(
             format!(
                 "wtype failed with exit code: {}",
                 wtype_status.code().unwrap_or(
@@ -277,8 +276,7 @@ fn copy_field_value(value: &str) -> Result<(), CopyFieldError> {
     // Check wl-copy status
     let wl_copy_status = wl_copy.wait().map_err(CopyFieldError::CopyFailed)?;
     if !wl_copy_status.success() {
-        return Err(CopyFieldError::CopyFailed(Error::new(
-            ErrorKind::Other,
+        return Err(CopyFieldError::CopyFailed(Error::other(
             format!(
                 "wl-copy failed with exit code: {}",
                 wl_copy_status.code().unwrap_or(
@@ -352,8 +350,8 @@ fn parse_passwords(passwords_list: &str) -> Vec<String> {
         });
 
         // Join the stack into the full path if it is not a directory
-        if let Some(p_or_p) = stack.iter().last() {
-            if !p_or_p.is_directory {
+        if let Some(p_or_p) = stack.iter().last() 
+            && !p_or_p.is_directory {
                 let password = stack
                     .iter()
                     .map(|pwd| &pwd.value)
@@ -361,7 +359,6 @@ fn parse_passwords(passwords_list: &str) -> Vec<String> {
                     .collect::<Vec<String>>()
                     .join("/");
                 passwords.push(password);
-            }
         }
     }
 
