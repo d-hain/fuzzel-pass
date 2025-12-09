@@ -245,16 +245,14 @@ fn type_field_value(value: &str) -> Result<(), TypeFieldError> {
         .map_err(TypeFieldError::CommandFailed)?;
 
     if !wtype_status.success() {
-        return Err(TypeFieldError::CommandFailed(Error::other(
-            format!(
-                "wtype failed with exit code: {}",
-                wtype_status.code().unwrap_or(
-                    wtype_status
-                        .stopped_signal()
-                        .expect("If this fails I shoot myself in the foot!")
-                )
-            ),
-        )));
+        return Err(TypeFieldError::CommandFailed(Error::other(format!(
+            "wtype failed with exit code: {}",
+            wtype_status.code().unwrap_or(
+                wtype_status
+                    .stopped_signal()
+                    .expect("If this fails I shoot myself in the foot!")
+            )
+        ))));
     }
 
     Ok(())
@@ -276,16 +274,14 @@ fn copy_field_value(value: &str) -> Result<(), CopyFieldError> {
     // Check wl-copy status
     let wl_copy_status = wl_copy.wait().map_err(CopyFieldError::CopyFailed)?;
     if !wl_copy_status.success() {
-        return Err(CopyFieldError::CopyFailed(Error::other(
-            format!(
-                "wl-copy failed with exit code: {}",
-                wl_copy_status.code().unwrap_or(
-                    wl_copy_status
-                        .stopped_signal()
-                        .expect("If this fails I shoot myself in the foot!")
-                )
-            ),
-        )));
+        return Err(CopyFieldError::CopyFailed(Error::other(format!(
+            "wl-copy failed with exit code: {}",
+            wl_copy_status.code().unwrap_or(
+                wl_copy_status
+                    .stopped_signal()
+                    .expect("If this fails I shoot myself in the foot!")
+            )
+        ))));
     }
 
     Ok(())
@@ -350,15 +346,16 @@ fn parse_passwords(passwords_list: &str) -> Vec<String> {
         });
 
         // Join the stack into the full path if it is not a directory
-        if let Some(p_or_p) = stack.iter().last() 
-            && !p_or_p.is_directory {
-                let password = stack
-                    .iter()
-                    .map(|pwd| &pwd.value)
-                    .cloned()
-                    .collect::<Vec<String>>()
-                    .join("/");
-                passwords.push(password);
+        if let Some(p_or_p) = stack.iter().last()
+            && !p_or_p.is_directory
+        {
+            let password = stack
+                .iter()
+                .map(|pwd| &pwd.value)
+                .cloned()
+                .collect::<Vec<String>>()
+                .join("/");
+            passwords.push(password);
         }
     }
 
