@@ -88,13 +88,18 @@ impl From<TypeFieldError> for Error {
 }
 
 struct Arguments {
+    /// The password to show
+    show_password: Option<String>,
     /// Type the selection instead of copying to the clipboard.
     type_selection: bool,
 }
 
 impl Arguments {
     fn new() -> Self {
-        Self { type_selection: false }
+        Self {
+            show_password: None,
+            type_selection: false,
+        }
     }
 
     fn parse() -> Self {
@@ -102,11 +107,17 @@ impl Arguments {
 
         let mut args_iter = env::args();
         _ = args_iter.next(); // Program name
-        for arg in args_iter {
+        for (idx, arg) in args_iter.enumerate() {
             match arg.as_str() {
                 "-h" | "--help" => print_usage(),
                 "-t" | "--type" => arguments.type_selection = true,
-                _ => panic!("Unknown flag or value: \"{}\"!", arg.as_str()),
+                value => {
+                    if idx == 0 {
+                        arguments.show_password = Some(value.to_string());
+                    } else {
+                        panic!("Unknown flag or value: \"{}\"!", value);
+                    }
+                }
             }
         }
 
@@ -118,7 +129,11 @@ fn print_usage() {
     eprintln!(
         "A utility to copy passwords from pass using fuzzel.
 
-Usage: {} [options]...
+Usage: {} [password] [options]...
+
+Positional Arguments:
+     [password]
+         A password to show directly, skipping the selection.
 
 Options:
      -t,--type
@@ -134,27 +149,30 @@ Options:
 fn main() -> Result<(), String> {
     let args = Arguments::parse();
 
-    // Get all passwords from "pass list"
-    let pass_list = Command::new("pass")
-        .arg("list")
-        .output()
-        .map_err(|e| format!("Failed to list password using \"pass list\"!: {}", e))?;
-
-    // Convert the "pass list" passwords to a &str
-    let password_list = if pass_list.status.success() {
-        str::from_utf8(&pass_list.stdout).map_err(|e| format!("Output of \"pass list\" is not valid UTF-8!: {}", e))
+    let selected_password = if let Some(password) = args.show_password {
+        password
     } else {
-        let stderr = str::from_utf8(&pass_list.stderr)
-            .map_err(|e| format!("The error output of \"pass list\" is not valid UTF-8!: {}", e))?;
-        Err(format!("Failed to list passwords using \"pass list\": {}", stderr))
+        // Get all passwords from "pass list"
+        let pass_list = Command::new("pass")
+            .arg("list")
+            .output()
+            .map_err(|e| format!("Failed to list password using \"pass list\"!: {}", e))?;
+
+        // Convert the "pass list" passwords to a &str
+        let password_list = if pass_list.status.success() {
+            str::from_utf8(&pass_list.stdout).map_err(|e| format!("Output of \"pass list\" is not valid UTF-8!: {}", e))
+        } else {
+            let stderr = str::from_utf8(&pass_list.stderr)
+                .map_err(|e| format!("The error output of \"pass list\" is not valid UTF-8!: {}", e))?;
+            Err(format!("Failed to list passwords using \"pass list\": {}", stderr))
+        };
+
+        // Parse the passwords with their shit format into a vector
+        let passwords = parse_passwords(password_list?);
+
+        // Set selected password using fuzzel
+        fuzzel_select_value(&passwords).map_err(|e| format!("Failed selecting a value using fuzzel!: {}", e))?
     };
-
-    // Parse the passwords with their shit format into a vector
-    let passwords = parse_passwords(password_list?);
-
-    // Select password using fuzzel
-    let selected_password =
-        fuzzel_select_value(&passwords).map_err(|e| format!("Failed selecting a value using fuzzel!: {}", e))?;
 
     // Get the extra fields in the password file
     let pass_show = Command::new("pass")
