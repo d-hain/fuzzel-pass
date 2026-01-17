@@ -92,6 +92,8 @@ struct Arguments {
     show_password: Option<String>,
     /// Type the selection instead of copying to the clipboard.
     type_selection: bool,
+    /// Generate OTP code using pass-otp
+    use_otp: bool,
 }
 
 impl Arguments {
@@ -99,6 +101,7 @@ impl Arguments {
         Self {
             show_password: None,
             type_selection: false,
+            use_otp: false,
         }
     }
 
@@ -111,8 +114,9 @@ impl Arguments {
             match arg.as_str() {
                 "-h" | "--help" => print_usage(),
                 "-t" | "--type" => arguments.type_selection = true,
+                "-o" | "--otp" => arguments.use_otp = true,
                 value => {
-                    if idx == 0 {
+                    if idx == 0 && !value.starts_with('-') {
                         arguments.show_password = Some(value.to_string());
                     } else {
                         panic!("Unknown flag or value: \"{}\"!", value);
@@ -136,6 +140,8 @@ Positional Arguments:
          A password to show directly, skipping the selection.
 
 Options:
+     -o,--otp
+         Generate and copy/type an OTP code using pass-otp instead of showing password fields.
      -t,--type
          Type the selection instead of copying to the clipboard.
      -h,--help
@@ -173,6 +179,21 @@ fn main() -> Result<(), String> {
         // Set selected password using fuzzel
         fuzzel_select_value(&passwords).map_err(|e| format!("Failed selecting a value using fuzzel!: {}", e))?
     };
+
+    // If OTP mode is enabled, generate and copy/type the OTP code directly
+    if args.use_otp {
+        let otp_code = get_otp_code(&selected_password)?;
+        
+        if args.type_selection {
+            type_field_value(&otp_code)
+                .map_err(|e| format!("Error while typing the OTP code using wtype: {}", e))?;
+        } else {
+            copy_field_value(&otp_code)
+                .map_err(|e| format!("Error while copying the OTP code to the clipboard using wl-copy: {}", e))?;
+        }
+        
+        return Ok(());
+    }
 
     // Get the extra fields in the password file
     let pass_show = Command::new("pass")
@@ -229,10 +250,30 @@ fn main() -> Result<(), String> {
     })?;
     fields.push_front(("password", password));
 
+    // Check if OTP is available for this entry and add it as an option
+    if check_otp_available(&selected_password) {
+        fields.push_back(("otp", "[Generate OTP Code]"));
+    }
+
     // Select a field using fuzzel
     let field_keys = fields.iter().map(|field| field.0.to_string()).collect::<Vec<String>>();
     let selected_field_key = fuzzel_select_value(&field_keys)
         .map_err(|e| format!("Error while selecting a password field using fuzzel!: {}", e))?;
+
+    // Handle OTP generation if selected
+    if selected_field_key == "otp" {
+        let otp_code = get_otp_code(&selected_password)?;
+        
+        if args.type_selection {
+            type_field_value(&otp_code)
+                .map_err(|e| format!("Error while typing the OTP code using wtype: {}", e))?;
+        } else {
+            copy_field_value(&otp_code)
+                .map_err(|e| format!("Error while copying the OTP code to the clipboard using wl-copy: {}", e))?;
+        }
+        
+        return Ok(());
+    }
 
     let selected_field = fields.iter().find(|field| field.0 == selected_field_key);
     if selected_field.is_none() {
@@ -253,6 +294,40 @@ fn main() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Check if a password entry has OTP support available
+fn check_otp_available(password_name: &str) -> bool {
+    Command::new("pass")
+        .arg("otp")
+        .arg("validate")
+        .arg(password_name)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Generate an OTP code using pass-otp
+fn get_otp_code(password_name: &str) -> Result<String, String> {
+    let otp_output = Command::new("pass")
+        .arg("otp")
+        .arg(password_name)
+        .output()
+        .map_err(|e| format!("Failed to run \"pass otp {}\"! Maybe pass-otp is not installed?: {}", password_name, e))?;
+
+    if otp_output.status.success() {
+        let otp_code = str::from_utf8(&otp_output.stdout)
+            .map_err(|e| format!("OTP output is not valid UTF-8!: {}", e))?
+            .trim()
+            .to_string();
+        Ok(otp_code)
+    } else {
+        let stderr = str::from_utf8(&otp_output.stderr)
+            .map_err(|e| format!("The error output of \"pass otp\" is not valid UTF-8!: {}", e))?;
+        Err(format!("Failed to generate OTP code using \"pass otp {}\": {}", password_name, stderr))
+    }
 }
 
 /// Types the passed value wherever the cursor is using wtype.
