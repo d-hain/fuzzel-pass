@@ -5,6 +5,54 @@ use std::process::{Command, Stdio, exit};
 use std::{env, error};
 use std::{fmt, str};
 
+// Print newlines in Main function errors
+struct MainError(String);
+
+impl fmt::Display for MainError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl fmt::Debug for MainError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for MainError {
+    fn from(value: String) -> Self {
+        MainError(value)
+    }
+}
+
+#[derive(Debug)]
+enum ParseFieldsError {
+    MultilineError { password: String, field: Field },
+}
+
+impl fmt::Display for ParseFieldsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParseFieldsError::MultilineError { password, field } => {
+                write!(
+                    f,
+                    "Failed in password \"{}\": Expected a multiline field after \"{}\", but got: {}",
+                    password, field.key, field.value
+                )
+            }
+        }
+    }
+}
+
+impl error::Error for ParseFieldsError {}
+
+impl From<ParseFieldsError> for Error {
+    fn from(value: ParseFieldsError) -> Self {
+        Error::other(value)
+    }
+}
+
 #[derive(Debug)]
 enum FuzzelSelectError {
     SpawnFailed(Error),
@@ -87,6 +135,14 @@ impl From<TypeFieldError> for Error {
     }
 }
 
+// A field of a password
+#[derive(Debug)]
+struct Field {
+    key: String,
+    value: String,
+    is_multiline: bool,
+}
+
 struct Arguments {
     /// The password to show
     show_password: Option<String>,
@@ -146,7 +202,7 @@ Options:
     exit(0);
 }
 
-fn main() -> Result<(), String> {
+fn main() -> Result<(), MainError> {
     let args = Arguments::parse();
 
     let selected_password = if let Some(password) = args.show_password {
@@ -201,24 +257,12 @@ fn main() -> Result<(), String> {
         return Err(format!(
             "Failed to show the contents of the password using \"pass show {}\": {}",
             selected_password, stderr
-        ));
+        ))?;
     };
 
     // Parse fields from "pass show <PWD>"
-    let mut fields = field_list
-        .lines()
-        .skip(1)
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            line.split_once(':').map(|(k, v)| (k, v.trim())).ok_or_else(|| {
-                format!(
-                    "Expected a key value pair split by ':' in the password file of \"{}\", but found: {}",
-                    selected_password, line
-                )
-            })
-        })
-        // (&str, &str) => (Key, Value)
-        .collect::<Result<VecDeque<(&str, &str)>, String>>()?;
+    let mut fields = parse_fields(field_list.to_string(), selected_password.clone())
+        .map_err(|e| format!("Error while parsing the fields out of \"pass show\": {}", e))?;
 
     // Add the password in front
     let password = field_list.lines().next().ok_or_else(|| {
@@ -227,24 +271,36 @@ fn main() -> Result<(), String> {
             selected_password
         )
     })?;
-    fields.push_front(("password", password));
+    fields.push_front(Field {
+        key: String::from("password"),
+        value: password.to_string(),
+        is_multiline: false,
+    });
 
     // Select a field using fuzzel
-    let field_keys = fields.iter().map(|field| field.0.to_string()).collect::<Vec<String>>();
+    let field_keys = fields.iter().map(|field| field.key.clone()).collect::<Vec<String>>();
     let selected_field_key = fuzzel_select_value(&field_keys)
         .map_err(|e| format!("Error while selecting a password field using fuzzel!: {}", e))?;
 
-    let selected_field = fields.iter().find(|field| field.0 == selected_field_key);
+    let selected_field = fields.iter().find(|field| field.key == selected_field_key);
     if selected_field.is_none() {
-        return Err("You somehow selected a non-existant field using fuzzel!".to_string());
+        Err("You somehow selected a non-existant field using fuzzel!".to_string())?;
     }
 
     // Copy selection to clipboard or type when that flag is passed
     if args.type_selection {
-        type_field_value(selected_field.unwrap().1)
+        if selected_field.unwrap().is_multiline {
+            Err(format!(
+                "Typing multiline fields using wtype is not recommended!\nPassword: {}\nField: {}",
+                selected_password,
+                selected_field.unwrap().key
+            ))?;
+        }
+
+        type_field_value(&selected_field.unwrap().value)
             .map_err(|e| format!("Error while typing the selected fields value using wtype: {}", e))?;
     } else {
-        copy_field_value(selected_field.unwrap().1).map_err(|e| {
+        copy_field_value(&selected_field.unwrap().value).map_err(|e| {
             format!(
                 "Error while copying the selected fields value to the clipboard using wl-copy: {}",
                 e
@@ -253,6 +309,81 @@ fn main() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Parses the fields from "pass show <PWD>".
+fn parse_fields(field_list: String, selected_password: String) -> Result<VecDeque<Field>, ParseFieldsError> {
+    #[derive(PartialEq, Eq)]
+    enum State {
+        LookingForField,
+        ReadingMultiline {
+            key: String,
+            marker: String,
+            buffer: String,
+        },
+    }
+
+    let mut result = VecDeque::new();
+    let mut state = State::LookingForField;
+
+    for raw_line in field_list.lines() {
+        let line = raw_line.trim_end();
+
+        match &mut state {
+            State::LookingForField => {
+                if let Some((key, value)) = line.split_once(':') {
+                    let key = key.to_string();
+                    let value = value.trim();
+
+                    if value.is_empty() {
+                        state = State::ReadingMultiline {
+                            key,
+                            marker: String::new(),
+                            buffer: String::new(),
+                        };
+                    } else {
+                        result.push_back(Field {
+                            key,
+                            value: value.to_string(),
+                            is_multiline: false,
+                        });
+                    }
+                }
+            }
+            State::ReadingMultiline { key, marker, buffer } => {
+                let trimmed_line = line.trim();
+
+                if marker.is_empty() {
+                    if !trimmed_line.is_empty() {
+                        *marker = trimmed_line.to_string();
+                    }
+                } else if trimmed_line == marker {
+                    result.push_back(Field {
+                        key: key.clone(),
+                        value: buffer.trim_end().to_string(),
+                        is_multiline: true,
+                    });
+                    state = State::LookingForField;
+                } else {
+                    buffer.push_str(line);
+                    buffer.push('\n');
+                }
+            }
+        }
+    }
+
+    if let State::ReadingMultiline { key, marker: _, buffer } = state {
+        return Err(ParseFieldsError::MultilineError {
+            password: selected_password,
+            field: Field {
+                key,
+                value: buffer,
+                is_multiline: true,
+            },
+        });
+    }
+
+    Ok(result)
 }
 
 /// Types the passed value wherever the cursor is using wtype.
