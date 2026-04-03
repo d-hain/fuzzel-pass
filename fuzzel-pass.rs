@@ -135,12 +135,38 @@ impl From<TypeFieldError> for Error {
     }
 }
 
+#[derive(Debug)]
+enum OtpError {
+    SpawnFailed(Error),
+    OtpFailed(String),
+}
+
+impl fmt::Display for OtpError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OtpError::SpawnFailed(e) => {
+                write!(f, "Failed to spawn pass! Maybe pass is not installed?: {}", e)
+            }
+            OtpError::OtpFailed(e) => write!(f, "Failed to generate OTP code using \"pass otp\": {}", e),
+        }
+    }
+}
+
+impl error::Error for OtpError {}
+
+impl From<OtpError> for Error {
+    fn from(value: OtpError) -> Self {
+        Error::other(value)
+    }
+}
+
 // A field of a password
 #[derive(Debug)]
 struct Field {
     key: String,
     value: String,
     is_multiline: bool,
+    is_otp: bool,
 }
 
 struct Arguments {
@@ -275,6 +301,7 @@ fn main() -> Result<(), MainError> {
         key: String::from("password"),
         value: password.to_string(),
         is_multiline: false,
+        is_otp: false,
     });
 
     // Select a field using fuzzel
@@ -287,6 +314,14 @@ fn main() -> Result<(), MainError> {
         Err("You somehow selected a non-existant field using fuzzel!".to_string())?;
     }
 
+    // Resolve the field value: generate TOTP code for OTP fields, use raw value otherwise
+    let resolved_value = if selected_field.unwrap().is_otp {
+        generate_otp(&selected_password)
+            .map_err(|e| format!("Error while generating OTP code: {}", e))?
+    } else {
+        selected_field.unwrap().value.clone()
+    };
+
     // Copy selection to clipboard or type when that flag is passed
     if args.type_selection {
         if selected_field.unwrap().is_multiline {
@@ -297,10 +332,10 @@ fn main() -> Result<(), MainError> {
             ))?;
         }
 
-        type_field_value(&selected_field.unwrap().value)
+        type_field_value(&resolved_value)
             .map_err(|e| format!("Error while typing the selected fields value using wtype: {}", e))?;
     } else {
-        copy_field_value(&selected_field.unwrap().value).map_err(|e| {
+        copy_field_value(&resolved_value).map_err(|e| {
             format!(
                 "Error while copying the selected fields value to the clipboard using wl-copy: {}",
                 e
@@ -331,7 +366,15 @@ fn parse_fields(field_list: String, selected_password: String) -> Result<VecDequ
 
         match &mut state {
             State::LookingForField => {
-                if let Some((key, value)) = line.split_once(':') {
+                let trimmed = line.trim();
+                if trimmed.starts_with("otpauth://") {
+                    result.push_back(Field {
+                        key: String::from("otp"),
+                        value: trimmed.to_string(),
+                        is_multiline: false,
+                        is_otp: true,
+                    });
+                } else if let Some((key, value)) = line.split_once(':') {
                     let key = key.to_string();
                     let value = value.trim();
 
@@ -346,6 +389,7 @@ fn parse_fields(field_list: String, selected_password: String) -> Result<VecDequ
                             key,
                             value: value.to_string(),
                             is_multiline: false,
+                            is_otp: false,
                         });
                     }
                 }
@@ -358,10 +402,13 @@ fn parse_fields(field_list: String, selected_password: String) -> Result<VecDequ
                         *marker = trimmed_line.to_string();
                     }
                 } else if trimmed_line == marker {
+                    let value = buffer.trim_end().to_string();
+                    let is_otp = value.starts_with("otpauth://");
                     result.push_back(Field {
                         key: key.clone(),
-                        value: buffer.trim_end().to_string(),
+                        value,
                         is_multiline: true,
+                        is_otp,
                     });
                     state = State::LookingForField;
                 } else {
@@ -379,6 +426,7 @@ fn parse_fields(field_list: String, selected_password: String) -> Result<VecDequ
                 key,
                 value: buffer,
                 is_multiline: true,
+                is_otp: false,
             },
         });
     }
@@ -434,6 +482,31 @@ fn copy_field_value(value: &str) -> Result<(), CopyFieldError> {
     }
 
     Ok(())
+}
+
+/// Generates a TOTP code by shelling out to `pass otp <password_name>`.
+fn generate_otp(password_name: &str) -> Result<String, OtpError> {
+    let output = Command::new("pass")
+        .arg("otp")
+        .arg(password_name)
+        .output()
+        .map_err(OtpError::SpawnFailed)?;
+
+    if !output.status.success() {
+        let stderr = str::from_utf8(&output.stderr).unwrap_or("non-UTF-8 error output");
+        return Err(OtpError::OtpFailed(stderr.trim().to_string()));
+    }
+
+    let code = str::from_utf8(&output.stdout)
+        .map_err(|e| OtpError::OtpFailed(format!("non-UTF-8 output from pass otp: {}", e)))?
+        .trim()
+        .to_string();
+
+    if code.is_empty() {
+        return Err(OtpError::OtpFailed("pass otp returned empty output".to_string()));
+    }
+
+    Ok(code)
 }
 
 /// Select and return a value from the given list of values using fuzzel.
