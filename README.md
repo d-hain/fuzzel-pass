@@ -107,31 +107,31 @@ nix build github:d-hain/fuzzel-pass
 ```nix
 # flake.nix
 {
-    inputs = {
-        nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-        fuzzel-pass = {
-            url = "github:d-hain/fuzzel-pass";
-            # inputs.nixpkgs.follows = "nixpkgs";
-        }
-    };
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    fuzzel-pass = {
+      url = "github:d-hain/fuzzel-pass";
+      # inputs.nixpkgs.follows = "nixpkgs";
+    }
+  };
 
-    outputs = {
-        nixpkgs,
-        fuzzel-pass,
-        ...
-    }: let
-        system = "x86_64-linux";
-        pkgs = nixpkgs.legacyPackages.${system};
-    in {
-        nixosConfigurations.default = nixpkgs.lib.nixosSystem {
-            system = system;
-            specialArgs = { inherit fuzzel-pass; };
+  outputs = {
+    nixpkgs,
+    fuzzel-pass,
+    ...
+  }: let
+    system = "x86_64-linux";
+    pkgs = nixpkgs.legacyPackages.${system};
+  in {
+    nixosConfigurations.default = nixpkgs.lib.nixosSystem {
+      system = system;
+      specialArgs = { inherit fuzzel-pass; };
 
-            modules = [
-                /path/to/configuration.nix
-            ];
-        };
+      modules = [
+        /path/to/configuration.nix
+      ];
     };
+  };
 }
 ```
 
@@ -139,24 +139,17 @@ nix build github:d-hain/fuzzel-pass
 # configuration.nix
 
 {
-    config,
-    lib,
-    pkgs,
-    fuzzel-pass,
-    ...
-}:
-{
-    # ...
-
-    users.users.USERNAME = {
-        # ...
-        packages = with pkgs; [
-            (fuzzel-pass.packages.${pkgs.system}.default)
-            # ...
-        ];
-    };
-
-    # ...
+  config,
+  lib,
+  pkgs,
+  fuzzel-pass,
+  ...
+}: {
+  users.users.USERNAME = {
+    packages = with pkgs; [
+      (fuzzel-pass.packages.${pkgs.stdenv.hostPlatform.system}.default)
+    ];
+  };
 }
 ```
 
